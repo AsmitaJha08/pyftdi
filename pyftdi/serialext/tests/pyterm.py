@@ -71,14 +71,14 @@ class MiniTerm:
         register(self._cleanup)
 
     def run(self, fullmode=False, loopback=False, silent=False,
-            localecho=False, autocr=False):
+            localecho=False, autocr=False, raw=False):
         """Switch to a pure serial terminal application"""
 
         # wait forever, although Windows is stupid and does not signal Ctrl+C,
         # so wait use a 1/2-second timeout that gives some time to check for a
         # Ctrl+C break then polls again...
-        print('Entering minicom mode @ %d bps' % self._port.baudrate)
-        stdout.flush()
+        print('Entering minicom mode @ %d bps' % self._port.baudrate,
+              file=stderr)
         self._port.timeout = 0.5
         self._resume = True
         # start the reader (target to host direction) within a dedicated thread
@@ -97,6 +97,7 @@ class MiniTerm:
         else:
             # regular kernel buffered device
             args.append(self._get_from_port)
+        args.append(bool(raw))
         reader = Thread(target=self._reader, args=tuple(args))
         reader.setDaemon(1)
         reader.start()
@@ -136,7 +137,7 @@ class MiniTerm:
             print(str(ex), file=stderr)
             return bytearray()
 
-    def _reader(self, loopback, getfunc):
+    def _reader(self, loopback, getfunc, raw):
         """Loop forever, processing received serial data in terminal mode"""
         try:
             # Try to read as many bytes as possible at once, and use a short
@@ -148,14 +149,17 @@ class MiniTerm:
                     continue
                 data = getfunc()
                 if data:
-                    stdout.write(data.decode('utf8', errors='replace'))
+                    if raw:
+                        stdout.buffer.write(data)
+                    else:
+                        stdout.write(data.decode('utf8', errors='replace'))
                     stdout.flush()
                 if loopback:
                     self._port.write(data)
         except KeyboardInterrupt:
             return
-        except Exception as e:
-            print("Exception: %s" % e)
+        except Exception as exc:
+            print("Exception: %s" % exc, file=stderr)
             if self._debug:
                 print(format_exc(chain=False), file=stderr)
             interrupt_main()
@@ -174,11 +178,11 @@ class MiniTerm:
                 if silent:
                     if ord(c) == 0x6:  # Ctrl+F
                         self._silent = True
-                        print('Silent\n')
+                        print('Silent\n', file=stderr)
                         continue
                     if ord(c) == 0x7:  # Ctrl+G
                         self._silent = False
-                        print('Reg\n')
+                        print('Reg\n', file=stderr)
                         continue
                 else:
                     if localecho:
@@ -193,7 +197,7 @@ class MiniTerm:
             except KeyboardInterrupt:
                 if fullmode:
                     continue
-                print('%sAborting...' % linesep)
+                print('%sAborting...' % linesep, file=stderr)
                 self._cleanup()
                 return
 
@@ -214,7 +218,7 @@ class MiniTerm:
                     self._port.read()
                 self._port.close()
                 self._port = None
-                print('Bye.')
+                print('Bye.', file=stderr)
             for fd, att in self._termstates:
                 tcsetattr(fd, TCSANOW, att)
         except Exception as ex:
@@ -254,7 +258,7 @@ class MiniTerm:
                 raise IOError('Cannot open port "%s"' % device)
             if debug:
                 backend = hasattr(port, 'BACKEND') and port.BACKEND or '?'
-                print("Using serial backend '%s'" % backend)
+                print("Using serial backend '%s'" % backend, file=stderr)
             return port
         except SerialException as e:
             raise IOError(str(e))
@@ -300,6 +304,9 @@ def main():
         argparser.add_argument('-e', '--localecho',
                                action='store_true',
                                help='local echo mode (print all typed chars)')
+        argparser.add_argument('-x', '--raw',
+                               action='store_true',
+                               help='print raw binary byte to stdout')
         argparser.add_argument('-r', '--crlf',
                                action='count', default=0,
                                help='prefix LF with CR char, use twice to '
@@ -337,10 +344,10 @@ def main():
                             rtscts=args.hwflow,
                             debug=args.debug)
         miniterm.run(args.fullmode, args.loopback, args.silent, args.localecho,
-                     args.crlf)
+                     args.crlf, args.raw)
 
-    except (IOError, ValueError) as e:
-        print('\nError: %s' % e, file=stderr)
+    except (IOError, ValueError) as exc:
+        print('\nError: %s' % exc, file=stderr)
         if debug:
             print(format_exc(chain=False), file=stderr)
         exit(1)
